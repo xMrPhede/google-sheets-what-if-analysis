@@ -17,7 +17,8 @@ function onOpen(e) {
   // https://developers.google.com/apps-script/reference/script/auth-mode
   if (e && e.authMode != ScriptApp.AuthMode.NONE) {
     // initialize document state for datatables
-    PropertiesService.getDocumentProperties().setProperty(DATATABLE_KEY, PropertiesService.getDocumentProperties().getProperty(DATATABLE_KEY) || "{}");
+    var dp = PropertiesService.getDocumentProperties();
+    dp.setProperty(DATATABLE_KEY, dp.getProperty(DATATABLE_KEY) || "{}");
   }
 }
 
@@ -44,7 +45,6 @@ function help_() {
 }
 
 function create_() {
-  
   var dt_ = JSON.parse(PropertiesService.getDocumentProperties().getProperty(DATATABLE_KEY)) || {};
   var ui = SpreadsheetApp.getUi();
   var dt_range = SpreadsheetApp.getActiveRange();
@@ -55,27 +55,43 @@ function create_() {
     help_();
   } else {
     // 2D data-table: row and column inputs
-    var result_colinput = ui.prompt("Cell to Set with Values from Left Column",
-                                    `Specify the column input cell
-                                     For example, enter "A2" to set cell A2 with the values in the left column.`, ui.ButtonSet.OK_CANCEL);
+    var result_colinput = ui.prompt(
+      "Cell to Set with Values from Left Column",
+      `Specify the column input cell
+       For example, enter "A2" to set cell A2 with the values in the left column.`,
+      ui.ButtonSet.OK_CANCEL
+    );
     
     if (result_colinput.getSelectedButton() == ui.Button.OK) {
-      SpreadsheetApp.getActiveSpreadsheet().getRange(result_colinput.getResponseText());
+      SpreadsheetApp.getActiveSpreadsheet().getRange(result_colinput.getResponseText()); // validate
       
       if (selected_cols > 2) {
-        var result_rowinput = ui.prompt("Cell to Set with Values from Top Row", 
-                                        `Specify the row input cell.
-                                         For example, enter "Sheet1!A4" to set cell A4 on Sheet1 with the values in the top row.
-                                         Leave blank if the top row contains formulas for outputs.`, ui.ButtonSet.OK_CANCEL);
+        var result_rowinput = ui.prompt(
+          "Cell to Set with Values from Top Row", 
+          `Specify the row input cell.
+           For example, enter "Sheet1!A4" to set cell A4 on Sheet1 with the values in the top row.
+           Leave blank if the top row contains formulas for outputs.`,
+          ui.ButtonSet.OK_CANCEL
+        );
         if (result_rowinput.getSelectedButton() == ui.Button.OK) {
           if (result_rowinput.getResponseText()) {
             // allow blank, but verify if non-blank
             SpreadsheetApp.getActiveSpreadsheet().getRange(result_rowinput.getResponseText());
           }
-          config = { "sheet": dt_range.getSheet().getName(), "range": dt_range.getA1Notation(), "rowinput": result_rowinput.getResponseText(), "colinput": result_colinput.getResponseText() };
+          config = {
+            "sheet": dt_range.getSheet().getName(),
+            "range": dt_range.getA1Notation(),
+            "rowinput": result_rowinput.getResponseText(),
+            "colinput": result_colinput.getResponseText()
+          };
         }
       } else {
-        config = { "sheet": dt_range.getSheet().getName(), "range": dt_range.getA1Notation(), "rowinput": null, "colinput": result_colinput.getResponseText() };
+        config = {
+          "sheet": dt_range.getSheet().getName(),
+          "range": dt_range.getA1Notation(),
+          "rowinput": null,
+          "colinput": result_colinput.getResponseText()
+        };
       }
     }
   }
@@ -88,16 +104,6 @@ function create_() {
     var topleft = dt_range.getA1Notation().split(":")[0];
     var name = "DataTable_" + dt_range.getSheet().getName().replace(/[^A-Za-z0-9]/g,"") + "_" + topleft;
 
-/*
-   // cleanup old (pre-version 10) names
-    SpreadsheetApp.getActiveSpreadsheet().getNamedRanges().forEach(function(nr) {
-      if (nr.match(new RegExp("DataTable_" + topleft + "[^_]+$")) && dt_[nr]) {
-          SpreadsheetApp.getActiveSpreadsheet().removeNamedRange(nr);
-          delete dt_[nr];
-      }
-    });
-*/
-    
     SpreadsheetApp.getActiveSpreadsheet().setNamedRange(name, dt_range);
     dt_[name] = config;
     
@@ -124,9 +130,11 @@ function refresh_() {
   
   // cleanup data tables if named range was deleted
   var keys = Object.keys(dt_);
-  for (var i = 0 ; i < keys.length; i++) {
-    if (!dt_[keys[i]].exists) {
-      delete dt_[keys[i]];
+  for (var k = 0 ; k < keys.length; k++) {
+    if (!dt_[keys[k]].exists) {
+      delete dt_[keys[k]];
+    } else {
+      delete dt_[keys[k]].exists; // strip temp flag
     }
   }
   PropertiesService.getDocumentProperties().setProperty(DATATABLE_KEY, JSON.stringify(dt_));
@@ -137,20 +145,43 @@ function delete_() {
   var responseButton = ui.alert('Are you sure?', 'Are you sure you want to delete all Data Tables?', ui.ButtonSet.YES_NO);
   if (responseButton == ui.Button.YES) {
     var dt_ = JSON.parse(PropertiesService.getDocumentProperties().getProperty(DATATABLE_KEY)) || {};
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var namedRanges = ss.getNamedRanges();
+    var nrByName = {};
+    namedRanges.forEach(function(nr){ nrByName[nr.getName()] = nr; });
+
     var keys = Object.keys(dt_);
     for (var i = 0 ; i < keys.length; i++) {
-      if (SpreadsheetApp.getActiveSpreadsheet().getNamedRanges().indexOf(keys[i]) > -1) {
-        SpreadsheetApp.getActiveSpreadsheet().removeNamedRange(keys[i]);
-        delete dt_[keys[i]];
+      var name = keys[i];
+      if (nrByName[name]) {
+        ss.removeNamedRange(name);
       }
+      delete dt_[name];
     }
     PropertiesService.getDocumentProperties().setProperty(DATATABLE_KEY, JSON.stringify(dt_));
   }
 }
 
+/** ========== NEW: snapshot/restore helpers (preserve formulas or raw values) ========== **/
+function snapshotCell_(range) {
+  return {
+    formula: range.getFormula(), // "" if no formula
+    value: range.getValue()
+  };
+}
+
+function restoreCell_(range, snap) {
+  if (!snap) return;
+  if (snap.formula) {
+    range.setFormula(snap.formula);
+  } else {
+    range.setValue(snap.value);
+  }
+}
+/** =============================================================================== **/
+
 function datatables_(config) {
-  // Note: We use getActiveSheet() instead of getActiveSpreadsheet() here,
-  // because of its expanded getRange() methods.
+  // Use the sheet by name since config stores it
   var s = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(config.sheet);
   var dt_range = s.getRange(config.range);
   var range_row = dt_range.getRow();
@@ -159,39 +190,52 @@ function datatables_(config) {
   var num_columns = dt_range.getNumColumns();
   var output_values = [];
 
+  // Input (column) + snapshot (stores formula or value)
   var colinput = s.getRange(config.colinput);
-  var colOriginal = colinput.getValue();
+  var colSnap = snapshotCell_(colinput);
+
+  // Test values (left column under header)
   var col_test_values = s.getRange(range_row + 1, range_col, num_rows - 1, 1).getValues().flat();
 
   if (config.rowinput) {
-    // bivariate
+    // Bivariate case
     var output = s.getRange(range_row, range_col, 1, 1);
     var row_test_values = s.getRange(range_row, range_col + 1, 1, num_columns - 1).getValues().flat();
     var rowinput = s.getRange(config.rowinput);
-    var rowOriginal = rowinput.getValue();
+    var rowSnap = snapshotCell_(rowinput);
 
-    for (var i = 0; i < col_test_values.length; i++) {
-      output_values[i] = []
-      for (var j = 0; j < row_test_values.length; j++) {
-        colinput.setValue(col_test_values[i]);
-        rowinput.setValue(row_test_values[j]);
-        output_values[i][j] = output.getValue();
+    try {
+      for (var i = 0; i < col_test_values.length; i++) {
+        output_values[i] = [];
+        for (var j = 0; j < row_test_values.length; j++) {
+          colinput.setValue(col_test_values[i]);
+          rowinput.setValue(row_test_values[j]);
+          output_values[i][j] = output.getValue();
+        }
       }
+    } finally {
+      // Always restore original inputs (formula preferred)
+      restoreCell_(rowinput, rowSnap);
+      restoreCell_(colinput, colSnap);
     }
-    rowinput.setValue(rowOriginal); // reset row input value
+
   } else {
-    // univariate, potentially multi-output
+    // Univariate (supports multi-output)
     var output = s.getRange(range_row, range_col + 1, 1, num_columns - 1);
-    for (var i = 0; i < col_test_values.length; i++) { 
-      colinput.setValue(col_test_values[i]);
-      output_values[i] = output.getValues().flat();
+
+    try {
+      for (var r = 0; r < col_test_values.length; r++) {
+        colinput.setValue(col_test_values[r]);
+        // read all outputs for this row at once
+        output_values[r] = output.getValues().flat();
+      }
+    } finally {
+      // Always restore original input (formula preferred)
+      restoreCell_(colinput, colSnap);
     }
   }
 
-  // Gets all the test values in a batch operation, so that expensive getCell and setValue calls are not made in the for-loop.
-  var dt_range_to_be_set = s.getRange(range_row + 1, range_col + 1, num_rows - 1, num_columns - 1);
-  dt_range_to_be_set.setValues(output_values);
-
-  // Reset the input value
-  colinput.setValue(colOriginal);
+  // Batch write results into the table body (excluding headers)
+  var dt_body = s.getRange(range_row + 1, range_col + 1, num_rows - 1, num_columns - 1);
+  dt_body.setValues(output_values);
 }
